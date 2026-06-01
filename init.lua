@@ -38,9 +38,7 @@ minetest.register_entity("estado_totalitario:npc", {
 		self.jump_cd = 0
 	end,
 
-	update_anim = function(self)
-		local vel = self.object:get_velocity() or {x=0,y=0,z=0}
-		local hspeed = math.sqrt(vel.x*vel.x + vel.z*vel.z)
+	update_anim = function(self, hspeed)
 		if hspeed > 0.5 then
 			self.object:set_animation({x = 168, y = 188}, 30, 0, true)
 		else
@@ -55,14 +53,14 @@ minetest.register_entity("estado_totalitario:npc", {
 
 		local vel = self.object:get_velocity() or {x=0, y=0, z=0}
 		local hp = self.object:get_hp()
+		local hspeed = math.sqrt(vel.x*vel.x + vel.z*vel.z)
 
+		-- Animation tick
 		self.anim_timer = self.anim_timer + dtime
-		if self.anim_timer >= 0.15 then
-			self:update_anim()
+		if self.anim_timer >= 0.2 then
+			self:update_anim(hspeed)
 			self.anim_timer = 0
 		end
-
-		self.jump_cd = self.jump_cd - dtime
 
 		-- Liquid damage
 		local node = minetest.get_node(pos)
@@ -102,7 +100,7 @@ minetest.register_entity("estado_totalitario:npc", {
 				local dirx = dx * inv
 				local dirz = dz * inv
 
-				-- Rotation
+				-- Smooth rotation
 				local want_yaw = math.atan2(-dirx, dirz)
 				local cur_yaw  = self.object:get_yaw() or 0
 				local diff = want_yaw - cur_yaw
@@ -110,55 +108,60 @@ minetest.register_entity("estado_totalitario:npc", {
 				if diff < -math.pi then diff = diff + 2 * math.pi end
 				self.object:set_yaw(cur_yaw + diff * math.min(dtime * 12, 1))
 
-				--  LIQUID AVOIDANCE (Strict)
+				-- 🔥 MULTI-POINT LIQUID SCAN (0.4 to 1.0 blocks ahead, 3 heights)
 				local liquid_ahead = false
-				local check_fwd = {x = pos.x + dirx * 0.6, y = pos.y, z = pos.z + dirz * 0.6}
-				local check_fwd_below = {x = pos.x + dirx * 0.6, y = pos.y - 1, z = pos.z + dirz * 0.6}
-				
-				local n1 = minetest.registered_nodes[minetest.get_node(check_fwd).name]
-				local n2 = minetest.registered_nodes[minetest.get_node(check_fwd_below).name]
-				if (n1 and n1.groups.liquid) or (n2 and n2.groups.liquid) then
-					liquid_ahead = true
-				end
-
-				if liquid_ahead then
-					-- COMPLETE STOP near liquids
-					self.object:set_velocity({x = 0, y = 0, z = 0})
-				else
-					-- ✅ SAFE TO MOVE
-					local vy = vel.y
-					self.object:set_velocity({x = dirx * SPEED, y = vy, z = dirz * SPEED})
-
-					--  ROBUST JUMP & ANTI-STUCK LOGIC
-					local ground_node = minetest.get_node({x=pos.x, y=pos.y - 0.1, z=pos.z})
-					local ground_def = minetest.registered_nodes[ground_node.name]
-					local is_grounded = ground_def and ground_def.walkable and vel.y > -1.5 and vel.y < 0.8
-
-					if is_grounded and self.jump_cd <= 0 then
-						local obstacle_found = false
-						-- Scan multiple points ahead (0.5 to 1.2 blocks)
-						for i = 0.5, 1.2, 0.3 do
-							local obs_pos = {x = pos.x + dirx * i, y = pos.y + 0.3, z = pos.z + dirz * i}
-							local obs_def = minetest.registered_nodes[minetest.get_node(obs_pos).name]
-							if obs_def and obs_def.walkable and not obs_def.groups.liquid then
-								local above_pos = {x = obs_pos.x, y = pos.y + 1.7, z = obs_pos.z}
-								local above_def = minetest.registered_nodes[minetest.get_node(above_pos).name]
-								if not above_def or (not above_def.walkable and not above_def.groups.liquid) then
-									obstacle_found = true
-									break
-								end
-							end
-						end
-
-						-- Stuck detection: grounded, facing player, but barely moving
-						local hspeed = math.sqrt(vel.x*vel.x + vel.z*vel.z)
-						local is_stuck = hspeed < 0.6 and flat_dist > 3.0
-
-						if obstacle_found or is_stuck then
-							self.object:set_velocity({x = dirx * SPEED, y = 4.8 + math.random()*0.4, z = dirz * SPEED})
-							self.jump_cd = 0.7
+				for dist = 0.4, 1.0, 0.3 do
+					for y_off = 0.0, -1.0, -0.5 do
+						local c = {x=pos.x+dirx*dist, y=pos.y+y_off, z=pos.z+dirz*dist}
+						local n = minetest.get_node(c)
+						local d = minetest.registered_nodes[n.name]
+						if d and d.groups.liquid then
+							liquid_ahead = true
 						end
 					end
+				end
+
+				-- 🧱 SOLID OBSTACLE SCAN
+				local solid_ahead = false
+				local can_jump_over = false
+				for dist = 0.6, 1.0, 0.2 do
+					local c = {x=pos.x+dirx*dist, y=pos.y+0.5, z=pos.z+dirz*dist}
+					local n = minetest.get_node(c)
+					local d = minetest.registered_nodes[n.name]
+					if d and d.walkable and not d.groups.liquid then
+						solid_ahead = true
+						local c_up = {x=c.x, y=c.y+1.2, z=c.z}
+						local n_up = minetest.get_node(c_up)
+						local d_up = minetest.registered_nodes[n_up.name]
+						if not d_up or (not d_up.walkable and not d_up.groups.liquid) then
+							can_jump_over = true
+						end
+					end
+				end
+
+				--  GROUND CHECK (Strict)
+				local below = {x=pos.x, y=pos.y-0.1, z=pos.z}
+				local below_def = minetest.registered_nodes[minetest.get_node(below).name]
+				local on_ground = below_def and below_def.walkable and math.abs(vel.y) < 0.1
+
+				--  MOVEMENT DECISION TREE
+				if liquid_ahead then
+					-- 🛑 STOP immediately near liquids
+					self.object:set_velocity({x = 0, y = vel.y, z = 0})
+					self.jump_cd = 1.0 -- Lock jump
+				elseif solid_ahead and can_jump_over and on_ground and self.jump_cd <= 0 then
+					-- ⬆️ JUMP over solid obstacles only
+					self.object:set_velocity({x = dirx * SPEED, y = 5.0, z = dirz * SPEED})
+					self.jump_cd = 1.5
+				elseif not solid_ahead then
+					--  NORMAL WALK
+					self.object:set_velocity({x = dirx * SPEED, y = vel.y, z = dirz * SPEED})
+					if self.jump_cd > 0 then self.jump_cd = self.jump_cd - dtime end
+				else
+					-- 🧱 BLOCKED (Solid but can't jump)
+					-- Gentle nudge to prevent wall-sticking, no jump
+					self.object:set_velocity({x = dirx * SPEED * 0.2, y = vel.y, z = dirz * SPEED * 0.2})
+					if self.jump_cd > 0 then self.jump_cd = self.jump_cd - dtime end
 				end
 			else
 				-- Close enough: stop horizontally, preserve gravity
