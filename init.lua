@@ -110,7 +110,7 @@ minetest.register_entity("estado_totalitario:npc", {
 				if diff < -math.pi then diff = diff + 2 * math.pi end
 				self.object:set_yaw(cur_yaw + diff * math.min(dtime * 12, 1))
 
-				-- 🔥 LIQUID AVOIDANCE
+				--  LIQUID AVOIDANCE (Strict)
 				local liquid_ahead = false
 				local check_fwd = {x = pos.x + dirx * 0.6, y = pos.y, z = pos.z + dirz * 0.6}
 				local check_fwd_below = {x = pos.x + dirx * 0.6, y = pos.y - 1, z = pos.z + dirz * 0.6}
@@ -129,24 +129,34 @@ minetest.register_entity("estado_totalitario:npc", {
 					local vy = vel.y
 					self.object:set_velocity({x = dirx * SPEED, y = vy, z = dirz * SPEED})
 
-					-- 🦘 STRICT JUMP LOGIC
-					local below = {x = pos.x, y = pos.y - 0.9, z = pos.z}
-					local below_def = minetest.registered_nodes[minetest.get_node(below).name]
-					local on_ground = below_def and below_def.walkable and math.abs(vel.y) < 0.3
+					--  ROBUST JUMP & ANTI-STUCK LOGIC
+					local ground_node = minetest.get_node({x=pos.x, y=pos.y - 0.1, z=pos.z})
+					local ground_def = minetest.registered_nodes[ground_node.name]
+					local is_grounded = ground_def and ground_def.walkable and vel.y > -1.5 and vel.y < 0.8
 
-					if on_ground and self.jump_cd <= 0 then
-						local obstacle = {x = pos.x + dirx * 0.9, y = pos.y + 0.5, z = pos.z + dirz * 0.9}
-						local obs_def = minetest.registered_nodes[minetest.get_node(obstacle).name]
-						
-						-- Only jump if solid block ahead (not liquid) and space above is clear
-						if obs_def and obs_def.walkable and not obs_def.groups.liquid then
-							local above_obs = {x = obstacle.x, y = pos.y + 1.8, z = obstacle.z}
-							local above_def = minetest.registered_nodes[minetest.get_node(above_obs).name]
-							
-							if not above_def or (not above_def.walkable and not above_def.groups.liquid) then
-								self.object:set_velocity({x = dirx * SPEED, y = 4.5, z = dirz * SPEED})
-								self.jump_cd = 2.0  -- 2 second cooldown prevents spam
+					if is_grounded and self.jump_cd <= 0 then
+						local obstacle_found = false
+						-- Scan multiple points ahead (0.5 to 1.2 blocks)
+						for i = 0.5, 1.2, 0.3 do
+							local obs_pos = {x = pos.x + dirx * i, y = pos.y + 0.3, z = pos.z + dirz * i}
+							local obs_def = minetest.registered_nodes[minetest.get_node(obs_pos).name]
+							if obs_def and obs_def.walkable and not obs_def.groups.liquid then
+								local above_pos = {x = obs_pos.x, y = pos.y + 1.7, z = obs_pos.z}
+								local above_def = minetest.registered_nodes[minetest.get_node(above_pos).name]
+								if not above_def or (not above_def.walkable and not above_def.groups.liquid) then
+									obstacle_found = true
+									break
+								end
 							end
+						end
+
+						-- Stuck detection: grounded, facing player, but barely moving
+						local hspeed = math.sqrt(vel.x*vel.x + vel.z*vel.z)
+						local is_stuck = hspeed < 0.6 and flat_dist > 3.0
+
+						if obstacle_found or is_stuck then
+							self.object:set_velocity({x = dirx * SPEED, y = 4.8 + math.random()*0.4, z = dirz * SPEED})
+							self.jump_cd = 0.7
 						end
 					end
 				end
@@ -204,7 +214,6 @@ minetest.register_globalstep(function(dtime)
 	local sx = ppos.x + math.cos(angle) * dist
 	local sz = ppos.z + math.sin(angle) * dist
 
-	-- 🔍 Find solid ground
 	local ground_y = nil
 	for y = ppos.y + 20, ppos.y - 30, -1 do
 		local name = minetest.get_node({x=sx, y=y, z=sz}).name
@@ -218,10 +227,7 @@ minetest.register_globalstep(function(dtime)
 	end
 	if not ground_y then return end
 
-	-- ️ Spawn 1.5 blocks above ground so gravity settles them naturally
 	local spawn_pos = {x=sx, y=ground_y + 1.5, z=sz}
-
-	-- Safety loop: if somehow inside a block, push up
 	for i = 1, 10 do
 		local check = minetest.get_node(spawn_pos)
 		local check_def = minetest.registered_nodes[check.name]
