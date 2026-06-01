@@ -1,0 +1,2 @@
+# estado_totalitario
+Hostile NPCs spawn ~100 blocks away, out of player sight. They chase players, can be stopped by walls, water, or lava, and fight back. Spawning stops after 1000 kills total. Admins reset with `/reset_estado`.
